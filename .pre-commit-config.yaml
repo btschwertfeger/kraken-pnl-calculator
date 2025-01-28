@@ -1,0 +1,23 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: Format Rust code
+        language: rust
+        entry: cargo
+        args: ["fmt", "--all", "--", "--check"]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: Clippy linter
+        language: rust
+        entry: cargo
+        args: ["clippy", "--all", "--all-targets", "--", "-D", "warnings"]
+        pass_filenames: false
+
+      - id: cargo-test
+        name: Run tests
+        language: rust
+        entry: cargo
+        args: ["test", "--all"]
+        pass_filenames: false

@@ -13,8 +13,6 @@ use clap::{Arg, Command};
 use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use serde_json;
-use serde_urlencoded;
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::VecDeque;
 use std::env;
@@ -74,8 +72,8 @@ struct KrakenAPI {
 impl KrakenAPI {
     fn new(api_key: String, secret_key: String) -> Self {
         Self {
-            api_key: api_key,
-            secret_key: secret_key,
+            api_key,
+            secret_key,
             client: Client::new(),
             base_url: "https://api.kraken.com".to_string(),
         }
@@ -98,7 +96,7 @@ impl KrakenAPI {
         let encoded_params = serde_urlencoded::to_string(&params).unwrap();
         let response = self
             .client
-            .post(&format!("{}{}", self.base_url, endpoint))
+            .post(format!("{}{}", self.base_url, endpoint))
             .header(
                 "Content-Type",
                 "application/x-www-form-urlencoded; charset=utf-8",
@@ -193,7 +191,7 @@ fn fetch_trades(
                 serde_json::from_str(&response).expect("Failed to parse response!");
 
             if let Some(result) = orders_response.result {
-                let orders: Vec<String> = result.closed.into_iter().map(|(txid, _)| txid).collect();
+                let orders: Vec<String> = result.closed.into_keys().collect();
                 closed_order_txids.extend(orders);
 
                 println!(
