@@ -1,0 +1,15 @@
+[package]
+name = "fifo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22.1"
+reqwest = { version = "0.12.12", features = ["blocking"] }
+hmac = "0.12.1"
+chrono = "0.4.39"
+serde = { version = "1.0.217", features = ["derive"] }
+clap = { version = "4.5.18", features = ["derive"] }
+sha2 = "0.10.8"
+serde_json = "1.0.137"
+serde_urlencoded = "0.7.1"
