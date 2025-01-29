@@ -5,6 +5,21 @@ GitHub: https://github.com/btschwertfeger
 
 TODOs:
 - Cache trades and orders to avoid fetching them multiple times
+- Ignore profits from tax-irrelevant years
+
+This program computes the FIFO PnL for a given trading pair on the Kraken
+exchange. It fetches the trades and closed orders from the Kraken API and
+computes the FIFO PnL based on the trades. The program requires the following
+environment variables to be set:
+
+- KRAKEN_API_KEY
+- KRAKEN_SECRET_KEY
+
+Example:
+
+$ export KRAKEN_API_KEY=mykey
+$ export KRAKEN_SECRET_KEY=mysecret
+$ cargo run -- --symbol XXBTZEUR --userref 1734531952 --tier pro
 */
 
 use base64::{engine::general_purpose, Engine as _};
@@ -16,6 +31,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::VecDeque;
 use std::env;
+
+// =============================================================================
+// The following structs are used to fetch historical trades from the Kraken
+// API.
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
@@ -45,6 +64,7 @@ struct TradesResponse {
 }
 
 // =============================================================================
+// The following structs are used to fetch closed orders from the Kraken API.
 
 #[derive(Deserialize, Debug)]
 struct Order {}
@@ -63,6 +83,7 @@ struct OrdersResponse {
 
 // =============================================================================
 
+/// A Kraken API client.
 struct KrakenAPI {
     api_key: String,
     secret_key: String,
@@ -70,6 +91,7 @@ struct KrakenAPI {
     base_url: String,
 }
 impl KrakenAPI {
+    /// Creates a new Kraken API client.
     fn new(api_key: String, secret_key: String) -> Self {
         Self {
             api_key,
@@ -78,6 +100,13 @@ impl KrakenAPI {
             base_url: "https://api.kraken.com".to_string(),
         }
     }
+
+    /// Computes the Kraken signature for a given request.
+    ///
+    /// # Returns
+    ///
+    /// The signature as a string.
+    ///
     fn get_kraken_signature(&self, url_path: &str, data: &str, nonce: &str) -> String {
         let key = general_purpose::STANDARD.decode(&self.secret_key).unwrap();
         let mut mac = Hmac::<Sha512>::new_from_slice(&key).unwrap();
@@ -86,6 +115,12 @@ impl KrakenAPI {
         general_purpose::STANDARD.encode(mac.finalize().into_bytes())
     }
 
+    /// Sends a POST request to the Kraken API.
+    ///
+    /// # Returns
+    ///
+    /// The response as a string.
+    ///
     fn request(&self, endpoint: &str, params: Vec<(&str, String)>) -> String {
         let nonce = format!(
             "{}",
@@ -121,6 +156,21 @@ impl KrakenAPI {
 
 // =============================================================================
 
+/// Fetches the trades and closed orders from the Kraken API.
+///
+/// # Arguments
+///
+/// * `api` - The Kraken API client.
+/// * `delay` - The time to wait between requests, depending on the API tier.
+/// * `symbol` - The trading pair symbol (e.g., XXBTZEUR).
+/// * `userref` - An optional user reference id to filter trades.
+/// * `start` - An optional start date for filtering trades.
+/// * `end` - An optional end date for filtering trades.
+///
+/// # Returns
+///
+/// All trades that match the given criteria.
+///
 fn fetch_trades(
     api: KrakenAPI,
     delay: u64,
@@ -141,12 +191,12 @@ fn fetch_trades(
         params.push(("end", end.to_string()));
     }
 
-    let mut all_trades: Vec<Trade> = Vec::new();
-    let mut offset = 0;
+    let mut relevant_trades: Vec<Trade> = Vec::new();
+    let mut offset: usize = 0usize;
 
     println!("Fetching trades...");
     loop {
-        let mut paginated_params = params.clone();
+        let mut paginated_params: Vec<(&str, String)> = params.clone();
         paginated_params.push(("ofs", offset.to_string()));
 
         let response: String = api.request("/0/private/TradesHistory", paginated_params.clone());
@@ -160,9 +210,8 @@ fn fetch_trades(
                 .filter(|(_, trade)| trade.pair == *symbol)
                 .map(|(_, trade)| trade)
                 .collect();
-            all_trades.extend(trades);
+            relevant_trades.extend(trades);
 
-            println!("Fetched {}/{} trades...", all_trades.len(), result.count);
             if result.count as usize <= offset + 50 {
                 break;
             }
@@ -177,10 +226,13 @@ fn fetch_trades(
 
     // =========================================================================
     let mut trades: Vec<Trade> = if userref.is_some() {
+        // When the userref is passed, we need to query the closed orders as
+        // well since only those can be matched up with trades based on the user
+        // reference number.
         println!("Fetching closed orders...");
 
         let mut closed_order_txids: Vec<String> = Vec::new();
-        offset = 0;
+        offset = 0usize;
 
         loop {
             let mut paginated_params: Vec<(&str, String)> = params.clone();
@@ -194,11 +246,6 @@ fn fetch_trades(
                 let orders: Vec<String> = result.closed.into_keys().collect();
                 closed_order_txids.extend(orders);
 
-                println!(
-                    "Fetched {}/{} closed orders...",
-                    closed_order_txids.len(),
-                    result.count
-                );
                 if result.count as usize <= closed_order_txids.len() {
                     break;
                 }
@@ -211,12 +258,12 @@ fn fetch_trades(
             offset += 50;
         }
 
-        all_trades
+        relevant_trades
             .into_iter()
             .filter(|trade| closed_order_txids.contains(&trade.ordertxid))
             .collect()
     } else {
-        all_trades
+        relevant_trades
     };
     trades.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
     trades
@@ -243,7 +290,7 @@ fn compute_fifo_pnl(trades: Vec<Trade>) -> (f64, f64, f64) {
             let mut cost_basis: f64 = 0f64;
             let mut base_currency_to_sell = amount;
 
-            while base_currency_to_sell > 0.0 && !fifo_queue.is_empty() {
+            while base_currency_to_sell > 0f64 && !fifo_queue.is_empty() {
                 let (fifo_amount, fifo_cost) = fifo_queue.pop_front().unwrap();
                 if fifo_amount <= base_currency_to_sell {
                     cost_basis += fifo_cost;
@@ -265,7 +312,7 @@ fn compute_fifo_pnl(trades: Vec<Trade>) -> (f64, f64, f64) {
         }
     }
 
-    let unrealized_pnl = fifo_queue
+    let unrealized_pnl: f64 = fifo_queue
         .iter()
         .map(|(lot_amount, lot_cost)| (price - (lot_cost / lot_amount)) * lot_amount)
         .sum();
@@ -273,9 +320,11 @@ fn compute_fifo_pnl(trades: Vec<Trade>) -> (f64, f64, f64) {
     (realized_pnl, unrealized_pnl, balance)
 }
 
+// =============================================================================
+
 fn main() {
     let matches = Command::new("FIFO PnL Calculator")
-        .version("1.0")
+        .version("0.1.0")
         .author("Benjamin Thomas Schwertfeger")
         .about("Compute FIFO PnL for Kraken trades")
         .arg(
@@ -351,6 +400,8 @@ fn main() {
         "pro" => 2,
         _ => 7,
     };
+    // =========================================================================
+    // Fetch trades and compute FIFO PnL
     let trades = fetch_trades(api, delay, symbol, userref, start, end);
 
     println!("{}", "*".repeat(80));
@@ -358,11 +409,15 @@ fn main() {
         println!("{:?}", trade);
     }
 
+    // =========================================================================
+    // Compute FIFO PnL
     println!("{}", "*".repeat(80));
     let (realized_pnl, unrealized_pnl, balance) = compute_fifo_pnl(trades);
 
+    // =========================================================================
     println!("Realized PnL: {}", realized_pnl);
     println!("Unrealized PnL: {}", unrealized_pnl);
     println!("Balance: {}", balance);
     println!("{}", "*".repeat(80));
+    // =========================================================================
 }
