@@ -1,0 +1,28 @@
+# -*- coding: utf-8 -*-
+# Copyright (C) 2023 Benjamin Thomas Schwertfeger
+# GitHub: https://github.com/btschwertfeger
+#
+# Template workflow to build the project for a specific os
+# and Python version.
+#
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  Build:
+    runs-on: ${{ inputs.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # IMPORTANT: otherwise the current tag does not get fetched and the build version gets worse
