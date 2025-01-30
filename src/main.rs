@@ -27,6 +27,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::VecDeque;
 use std::env;
+use std::fs::File;
+use std::io::Write;
 
 // =============================================================================
 // The following structs are used to fetch historical trades from the Kraken
@@ -99,8 +101,21 @@ impl KrakenAPI {
 
     /// Computes the Kraken signature for a given request.
     ///
+    /// # Arguments
+    ///
+    /// * `url_path` - The URL path of the API endpoint.
+    /// * `data` - The request data to be signed.
+    /// * `nonce` - A unique nonce value for the request.
+    ///
     /// # Returns
     ///
+    /// A string representing the computed Kraken signature.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let signature = api.get_kraken_signature("/0/private/Balance", "nonce=123456", "123456");
+    /// ```
     /// The signature as a string.
     ///
     fn get_kraken_signature(&self, url_path: &str, data: &str, nonce: &str) -> String {
@@ -165,7 +180,13 @@ impl KrakenAPI {
 ///
 /// # Returns
 ///
-/// All trades that match the given criteria.
+/// A vector of trades that match the given criteria.
+///
+/// This function fetches trades and closed orders from the Kraken API based on
+/// the provided criteria. It handles pagination and rate limiting based on the
+/// API tier. If a user reference is provided, it also fetches closed orders to
+/// match trades with the given user reference. The trades are sorted by time
+/// before being returned. All trades that match the given criteria.
 ///
 fn fetch_trades(
     api: KrakenAPI,
@@ -265,6 +286,23 @@ fn fetch_trades(
     trades
 }
 
+/// Computes the FIFO PnL for a given set of trades.
+///
+/// # Arguments
+///
+/// * `trades` - A vector of trades to compute the PnL for.
+/// * `year` - An optional year to filter the trades. If provided, only profits
+///   made within the specified year are considered.
+///
+/// # Returns
+///
+/// A tuple containing the realized PnL, unrealized PnL, and the balance.
+///
+/// This function processes the trades in a FIFO manner to compute the realized
+/// and unrealized PnL. If a specific year is provided, only the profits made
+/// within that year are considered for the realized PnL. The function maintains
+/// a FIFO queue to track the cost basis of the trades and calculates the PnL
+/// accordingly.
 fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
     let mut fifo_queue: VecDeque<(f64, f64)> = VecDeque::new();
     let mut realized_pnl: f64 = 0f64;
@@ -272,20 +310,20 @@ fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
     let mut price: f64 = 0f64;
 
     for trade in trades {
-        let trade_year = DateTime::from_timestamp_nanos((trade.time * 1e9) as i64).year();
+        let trade_year: i32 = DateTime::from_timestamp_nanos((trade.time * 1e9) as i64).year();
         let side: String = trade.side;
         let amount: f64 = trade.vol.parse().unwrap();
         price = trade.price.parse().unwrap();
         let fee: f64 = trade.fee.parse().unwrap();
 
         if side == "buy" {
-            let total_cost = (amount * price) + fee;
+            let total_cost: f64 = (amount * price) + fee;
             fifo_queue.push_back((amount, total_cost));
             balance += amount;
         } else if side == "sell" {
             let sell_proceeds: f64 = (amount * price) - fee;
             let mut cost_basis: f64 = 0f64;
-            let mut base_currency_to_sell = amount;
+            let mut base_currency_to_sell: f64 = amount;
 
             while base_currency_to_sell > 0f64 && !fifo_queue.is_empty() {
                 let (fifo_amount, fifo_cost) = fifo_queue.pop_front().unwrap();
@@ -303,7 +341,7 @@ fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
                 }
             }
 
-            let pnl = sell_proceeds - cost_basis;
+            let pnl: f64 = sell_proceeds - cost_basis;
             if let Some(year) = year {
                 if trade_year == year as i32 {
                     realized_pnl += pnl;
@@ -321,6 +359,47 @@ fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
         .sum();
 
     (realized_pnl, unrealized_pnl, balance)
+}
+
+/// Writes the trades to a CSV file.
+///
+/// # Arguments
+///
+/// * `trades` - A reference to a vector of trades to be written to the CSV
+///   file.
+/// * `file_path` - The path of the CSV file to write the trades to.
+///
+/// This function writes the trades to a CSV file with the specified file path.
+/// The CSV file includes a header row and each trade is written as a row in the
+/// CSV file. The time field is converted to a human-readable format before
+/// being written to the file.
+fn write_trades_to_csv(trades: &Vec<Trade>, file_path: &str) {
+    let mut file: File = File::create(file_path).expect("Could not create file");
+    writeln!(
+        file,
+        "time,pair,side,price,fee,vol,cost,ordertype,ordertxid"
+    )
+    .expect("Failed to write header to CSV!");
+
+    for trade in trades {
+        let time_str = DateTime::from_timestamp_nanos((trade.time * 1e9) as i64)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{}",
+            time_str,
+            trade.pair,
+            trade.side,
+            trade.price,
+            trade.fee,
+            trade.vol,
+            trade.cost,
+            trade.ordertype,
+            trade.ordertxid,
+        )
+        .expect("Failed to write trades to CSV!");
+    }
 }
 
 // =============================================================================
@@ -362,9 +441,8 @@ fn main() {
         .arg(
             Arg::new("csv")
                 .long("csv")
-                .value_name("CSV")
                 .help("Generate a CSV file listing the trades")
-                .value_parser(clap::value_parser!(bool)),
+                .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("year")
@@ -402,6 +480,7 @@ fn main() {
             .timestamp() as f64
     });
     let userref: Option<i32> = matches.get_one::<i32>("userref").copied();
+    let csv = matches.get_flag("csv");
     let api_key: String =
         env::var("KRAKEN_API_KEY").expect("The environment variable 'KRAKEN_API_KEY' must be set!");
     let secret_key: String = env::var("KRAKEN_SECRET_KEY")
@@ -418,6 +497,10 @@ fn main() {
     // =========================================================================
     // Fetch trades and compute FIFO PnL
     let trades = fetch_trades(api, delay, symbol, userref, start, end);
+
+    if csv {
+        write_trades_to_csv(&trades, "trades.csv");
+    }
 
     println!("{}", "*".repeat(80));
     for trade in &trades {

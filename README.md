@@ -29,7 +29,7 @@ the [Rust website](https://www.rust-lang.org/).
    ```bash
    export KRAKEN_API_KEY=<your-api-key>
    export KRAKEN_SECRET_KEY=<your-secret-key>
-   cargo run -- --symbol XXBTZEUR --userref 1734531952 --start "2024-01-01" --tier pro
+   cargo run -- --symbol XXBTZEUR --userref 1734531952 --start "2024-01-01" --tier intermediate
    ```
 
    NOTE: The `--tier` flag is optional and reflects your Kraken account tier,
@@ -38,10 +38,22 @@ the [Rust website](https://www.rust-lang.org/).
 
 ## Example output
 
+In order to compute the tax liability, the tool fetches the trades and closed
+orders from the Kraken API and then calculates the realized and unrealized PnL
+as well as the balance (based on the selected time period).
+
+In order to compute the realized and unrealized PnL for the year 2025, including
+orders with the user reference 1734531952, the following command can be used:
+
 ```bash
-cargo run -- --symbol XXBTZEUR --userref 1734531952 --start "2024-01-01" --tier pro
+$ export KRAKEN_API_KEY=mykey
+$ export KRAKEN_SECRET_KEY=mysecret
+$ cargo run -- --symbol XXBTZEUR --userref 1734531952 --year 2025
+
 Fetching trades...
 Fetching closed orders...
+********************************************************************************
+...
 ********************************************************************************
 Realized PnL: 3.4544660313202176
 Unrealized PnL: 0.3216477636798123
