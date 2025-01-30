@@ -3,10 +3,6 @@
 Copyright (C) 2025 Benjamin Thomas Schwertfeger
 GitHub: https://github.com/btschwertfeger
 
-TODOs:
-- Cache trades and orders to avoid fetching them multiple times
-- Ignore profits from tax-irrelevant years
-
 This program computes the FIFO PnL for a given trading pair on the Kraken
 exchange. It fetches the trades and closed orders from the Kraken API and
 computes the FIFO PnL based on the trades. The program requires the following
@@ -19,11 +15,11 @@ Example:
 
 $ export KRAKEN_API_KEY=mykey
 $ export KRAKEN_SECRET_KEY=mysecret
-$ cargo run -- --symbol XXBTZEUR --userref 1734531952 --tier pro
+$ cargo run -- --symbol XXBTZEUR --userref 1734531952 --tier pro --year 2025 --start 2024-01-01
 */
 
 use base64::{engine::general_purpose, Engine as _};
-use chrono::NaiveDate;
+use chrono::{DateTime, Datelike, NaiveDate};
 use clap::{Arg, Command};
 use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
@@ -269,13 +265,14 @@ fn fetch_trades(
     trades
 }
 
-fn compute_fifo_pnl(trades: Vec<Trade>) -> (f64, f64, f64) {
+fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
     let mut fifo_queue: VecDeque<(f64, f64)> = VecDeque::new();
     let mut realized_pnl: f64 = 0f64;
     let mut balance: f64 = 0f64;
     let mut price: f64 = 0f64;
 
     for trade in trades {
+        let trade_year = DateTime::from_timestamp_nanos((trade.time * 1e9) as i64).year();
         let side: String = trade.side;
         let amount: f64 = trade.vol.parse().unwrap();
         price = trade.price.parse().unwrap();
@@ -307,7 +304,13 @@ fn compute_fifo_pnl(trades: Vec<Trade>) -> (f64, f64, f64) {
             }
 
             let pnl = sell_proceeds - cost_basis;
-            realized_pnl += pnl;
+            if let Some(year) = year {
+                if trade_year == year as i32 {
+                    realized_pnl += pnl;
+                }
+            } else {
+                realized_pnl += pnl;
+            }
             balance -= amount;
         }
     }
@@ -359,21 +362,30 @@ fn main() {
         .arg(
             Arg::new("csv")
                 .long("csv")
+                .value_name("CSV")
                 .help("Generate a CSV file listing the trades")
                 .value_parser(clap::value_parser!(bool)),
+        )
+        .arg(
+            Arg::new("year")
+                .long("year")
+                .value_name("YEAR")
+                .help("Only consider profits made within a specific year")
+                .value_parser(clap::value_parser!(u32)),
         )
         .arg(
             Arg::new("tier")
                 .long("tier")
                 .value_name("TIER")
-                .help("API tier (starter, intermediate, pro)")
+                .help("API tier (starter, intermediate, or pro)")
                 .required(true)
                 .value_parser(clap::value_parser!(String)),
         )
         .get_matches();
 
-    let symbol = matches.get_one::<String>("symbol").unwrap();
-    let start = matches.get_one::<String>("start").map(|s| {
+    let symbol: &String = matches.get_one::<String>("symbol").unwrap();
+    let year: Option<u32> = matches.get_one::<u32>("year").copied();
+    let start: Option<f64> = matches.get_one::<String>("start").map(|s| {
         NaiveDate::parse_from_str(s, "%Y-%m-%d")
             .unwrap()
             .and_hms_opt(0, 0, 0)
@@ -381,7 +393,7 @@ fn main() {
             .and_utc()
             .timestamp() as f64
     });
-    let end = matches.get_one::<String>("end").map(|s| {
+    let end: Option<f64> = matches.get_one::<String>("end").map(|s| {
         NaiveDate::parse_from_str(s, "%Y-%m-%d")
             .unwrap()
             .and_hms_opt(23, 59, 59)
@@ -389,30 +401,37 @@ fn main() {
             .and_utc()
             .timestamp() as f64
     });
-    let userref = matches.get_one::<i32>("userref").copied();
-    let api_key = env::var("KRAKEN_API_KEY").expect("KRAKEN_API_KEY must be set");
-    let secret_key = env::var("KRAKEN_SECRET_KEY").expect("KRAKEN_SECRET_KEY must be set");
+    let userref: Option<i32> = matches.get_one::<i32>("userref").copied();
+    let api_key: String =
+        env::var("KRAKEN_API_KEY").expect("The environment variable 'KRAKEN_API_KEY' must be set!");
+    let secret_key: String = env::var("KRAKEN_SECRET_KEY")
+        .expect("The environment variable 'KRAKEN_SECRET_KEY' must be set!");
 
     let api = KrakenAPI::new(api_key, secret_key);
     let delay: u64 = match matches.get_one::<String>("tier").unwrap().as_str() {
-        "starter" => 7,
-        "intermediate" => 4,
-        "pro" => 2,
-        _ => 7,
+        "starter" => 7, // It takes 7 seconds to recover 2 API points with 0.33 points per second.
+        "intermediate" => 4, // It takes 4 seconds to recover 2 API points with 0.5 points per second.
+        "pro" => 2,          // It takes 2 seconds to recover 2 API points with 1 point per second.
+        _ => 7,              // Default to starter tier.
     };
+
     // =========================================================================
     // Fetch trades and compute FIFO PnL
     let trades = fetch_trades(api, delay, symbol, userref, start, end);
 
     println!("{}", "*".repeat(80));
     for trade in &trades {
-        println!("{:?}", trade);
+        println!(
+            "{:?} {}",
+            trade,
+            DateTime::from_timestamp_nanos((trade.time * 1e9) as i64).format("%Y-%m-%d %H:%M:%S")
+        );
     }
 
     // =========================================================================
     // Compute FIFO PnL
     println!("{}", "*".repeat(80));
-    let (realized_pnl, unrealized_pnl, balance) = compute_fifo_pnl(trades);
+    let (realized_pnl, unrealized_pnl, balance) = compute_fifo_pnl(trades, year);
 
     // =========================================================================
     println!("Realized PnL: {}", realized_pnl);
