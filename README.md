@@ -33,23 +33,29 @@ the balance (based on the selected time period).
    git clone https:://github.com/btschwertfeger/kraken-pnl-calculator.git
    ```
 
-2. In order to compute the realized and unrealized PnL for the year 2025,
+2. In order to compute the realized and unrealized PnL for the year 2024,
    including orders with the user reference 1734531952, the following command
    can be used:
 
    ```bash
    $ export KRAKEN_API_KEY=<your-api-key>
    $ export KRAKEN_SECRET_KEY=<your-secret-key>
-   $ cargo run -- --symbol XXBTZEUR --userref 1734531952 --year 2025 --tier intermediate
+   $ cargo run -- --symbol XXBTZEUR --userref 1734531952 --year 2024 --start 2024-01-01 --end 2024-12-31 --tier intermediate
 
    Fetching trades...
    Fetching closed orders...
    ********************************************************************************
    ...
    ********************************************************************************
-   Realized PnL: 3.4544660313202176
-   Unrealized PnL: 0.3216477636798123
-   Balance: 0.0010760599999999996
+   Realized PnL: 0.3641678421645933
+   Unrealized PnL: 0.08137250483540595
+   Balance: 0.00011552000000000002
+   Total Buy Volume (Base): 0.00038761
+   Total Sell Volume (Base): 0.00027209
+   Total Buy Volume (Quote): 35.085761812
+   Total Sell Volume (Quote): 25.059991759000003
+   Total Cost of Sold Assets: 24.69582391683541
+   Total Value of Sold Assets: 25.059991759000003
    ********************************************************************************
    ```
 
