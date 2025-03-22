@@ -15,7 +15,7 @@ Example:
 
 $ export KRAKEN_API_KEY=mykey
 $ export KRAKEN_SECRET_KEY=mysecret
-$ cargo run -- --symbol XXBTZEUR --userref 1734531952 --tier pro --year 2025 --start 2024-01-01
+$ cargo run -- --symbol XXBTZEUR --userref 1734531952 --tier pro --year 2024 --start 2024-01-01 --end 2024-12-31
 */
 
 use base64::{engine::general_purpose, Engine as _};
@@ -296,18 +296,26 @@ fn fetch_trades(
 ///
 /// # Returns
 ///
-/// A tuple containing the realized PnL, unrealized PnL, and the balance.
+/// A tuple containing the realized PnL, unrealized PnL, balance, total buy/sell volumes for base and quote currencies,
+/// total cost of sold assets, and total value received from selling them.
 ///
 /// This function processes the trades in a FIFO manner to compute the realized
-/// and unrealized PnL. If a specific year is provided, only the profits made
-/// within that year are considered for the realized PnL. The function maintains
-/// a FIFO queue to track the cost basis of the trades and calculates the PnL
-/// accordingly.
-fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
+/// and unrealized PnL. It also calculates the total volume of bought and sold assets for both base and quote currencies,
+/// as well as the total cost of sold assets and the total value received from selling them.
+fn compute_fifo_pnl(
+    trades: Vec<Trade>,
+    year: Option<u32>,
+) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
     let mut fifo_queue: VecDeque<(f64, f64)> = VecDeque::new();
     let mut realized_pnl: f64 = 0f64;
     let mut balance: f64 = 0f64;
     let mut price: f64 = 0f64;
+    let mut total_buy_volume_base: f64 = 0f64;
+    let mut total_sell_volume_base: f64 = 0f64;
+    let mut total_buy_volume_quote: f64 = 0f64;
+    let mut total_sell_volume_quote: f64 = 0f64;
+    let mut total_cost_of_sold_assets: f64 = 0f64;
+    let mut total_value_of_sold_assets: f64 = 0f64;
 
     for trade in trades {
         let trade_year: i32 = DateTime::from_timestamp_nanos((trade.time * 1e9) as i64).year();
@@ -320,6 +328,8 @@ fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
             let total_cost: f64 = (amount * price) + fee;
             fifo_queue.push_back((amount, total_cost));
             balance += amount;
+            total_buy_volume_base += amount;
+            total_buy_volume_quote += total_cost;
         } else if side == "sell" {
             let sell_proceeds: f64 = (amount * price) - fee;
             let mut cost_basis: f64 = 0f64;
@@ -350,6 +360,10 @@ fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
                 realized_pnl += pnl;
             }
             balance -= amount;
+            total_sell_volume_base += amount;
+            total_sell_volume_quote += sell_proceeds;
+            total_cost_of_sold_assets += cost_basis;
+            total_value_of_sold_assets += sell_proceeds;
         }
     }
 
@@ -358,7 +372,17 @@ fn compute_fifo_pnl(trades: Vec<Trade>, year: Option<u32>) -> (f64, f64, f64) {
         .map(|(lot_amount, lot_cost)| (price - (lot_cost / lot_amount)) * lot_amount)
         .sum();
 
-    (realized_pnl, unrealized_pnl, balance)
+    (
+        realized_pnl,
+        unrealized_pnl,
+        balance,
+        total_buy_volume_base,
+        total_sell_volume_base,
+        total_buy_volume_quote,
+        total_sell_volume_quote,
+        total_cost_of_sold_assets,
+        total_value_of_sold_assets,
+    )
 }
 
 /// Writes the trades to a CSV file.
@@ -514,12 +538,28 @@ fn main() {
     // =========================================================================
     // Compute FIFO PnL
     println!("{}", "*".repeat(80));
-    let (realized_pnl, unrealized_pnl, balance) = compute_fifo_pnl(trades, year);
+    let (
+        realized_pnl,
+        unrealized_pnl,
+        balance,
+        total_buy_volume_base,
+        total_sell_volume_base,
+        total_buy_volume_quote,
+        total_sell_volume_quote,
+        total_cost_of_sold_assets,
+        total_value_of_sold_assets,
+    ) = compute_fifo_pnl(trades, year);
 
     // =========================================================================
     println!("Realized PnL: {}", realized_pnl);
     println!("Unrealized PnL: {}", unrealized_pnl);
     println!("Balance: {}", balance);
+    println!("Total Buy Volume (Base): {}", total_buy_volume_base);
+    println!("Total Sell Volume (Base): {}", total_sell_volume_base);
+    println!("Total Buy Volume (Quote): {}", total_buy_volume_quote);
+    println!("Total Sell Volume (Quote): {}", total_sell_volume_quote);
+    println!("Total Cost of Sold Assets: {}", total_cost_of_sold_assets);
+    println!("Total Value of Sold Assets: {}", total_value_of_sold_assets);
     println!("{}", "*".repeat(80));
     // =========================================================================
 }
